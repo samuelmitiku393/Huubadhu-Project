@@ -6,9 +6,11 @@ import User from "../models/User.js";
 import auth from "../middleware/auth.js";
 import authorize from "../middleware/authorize.js";
 import Course from "../models/Course.js";
-
+import Content from "../models/Content.js";
+import Enrollment from "../models/Enrollment.js";
+import Discussion from "../models/Discussion.js";
+import Quiz from "../models/Quiz.js";
 const router = express.Router();
-
 router.post(
   "/register",
   [
@@ -56,7 +58,6 @@ router.post(
     }
   }
 );
-
 router.post(
   "/login",
   [
@@ -99,21 +100,6 @@ router.post(
     }
   }
 );
-
-router.get("/me", auth, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id).select("-password");
-    res.json(user);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send("Server error");
-  }
-});
-
-router.get("/admin", auth, authorize(["admin"]), (req, res) => {
-  res.send("Welcome Admin");
-});
-
 router.post(
   "/courses",
   auth,
@@ -134,4 +120,125 @@ router.post(
     }
   }
 );
+
+// Course update route
+router.put(
+  "/courses/:id",
+  auth,
+  authorize(["teacher", "admin"]),
+  async (req, res) => {
+    const { title, description } = req.body;
+    try {
+      let course = await Course.findById(req.params.id);
+      if (!course) return res.status(404).json({ msg: "Course not found" });
+      if (course.instructor.toString() !== req.user.id) {
+        return res.status(401).json({ msg: "User not authorized" });
+      }
+      course = await Course.findByIdAndUpdate(
+        req.params.id,
+        { $set: { title, description } },
+        { new: true }
+      );
+      res.json(course);
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send("Server error");
+    }
+  }
+);
+
+// Add content to the course
+router.post(
+  "/courses/:courseId/content",
+  auth,
+  authorize(["teacher", "admin"]),
+  async (req, res) => {
+    const { type, contentURL, description } = req.body;
+    try {
+      const content = new Content({
+        course: req.params.courseId,
+        type,
+        contentURL,
+        description,
+      });
+      await content.save();
+      const course = await Course.findById(req.params.courseId);
+      course.content.push(content);
+      await course.save();
+      res.json(content);
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send("Server error");
+    }
+  }
+);
+
+router.post("/enrollments", auth, authorize(["student"]), async (req, res) => {
+  const { courseId } = req.body;
+  try {
+    const enrollment = new Enrollment({
+      student: req.user.id,
+      course: courseId,
+      enrollmentDate: Date.now(),
+    });
+    await enrollment.save();
+    const course = await Course.findById(courseId);
+    course.studentsEnrolled.push(req.user.id);
+    await course.save();
+    res.json(enrollment);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server error");
+  }
+});
+
+router.get("/dashboard", auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password");
+    const courses = await Course.find({ studentsEnrolled: req.user.id });
+    res.json({ user, courses });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server error");
+  }
+});
+
+router.post("/courses/:courseId/discussions", auth, async (req, res) => {
+  const { comment } = req.body;
+  try {
+    const discussion = new Discussion({
+      course: req.params.courseId,
+      user: req.user.id,
+      comment,
+      timestamp: Date.now(),
+    });
+    await discussion.save();
+    res.json(discussion);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server error");
+  }
+});
+
+router.post(
+  "/courses/:courseId/quizzes",
+  auth,
+  authorize(["teacher", "admin"]),
+  async (req, res) => {
+    const { questions, answers } = req.body;
+    try {
+      const quiz = new Quiz({
+        course: req.params.courseId,
+        questions,
+        answers,
+      });
+      await quiz.save();
+      res.json(quiz);
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send("Server error");
+    }
+  }
+);
+
 export default router;
