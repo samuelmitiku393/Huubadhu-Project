@@ -10,7 +10,11 @@ import Content from "../models/Content.js";
 import Enrollment from "../models/Enrollment.js";
 import Discussion from "../models/Discussion.js";
 import Quiz from "../models/Quiz.js";
+import ContactUs from "../models/ContactUs.js";
+import Review from "../models/Reviews.js";
 const router = express.Router();
+
+// register route
 router.post(
   "/register",
   [
@@ -19,6 +23,8 @@ router.post(
     body("password", "Password must be at least 6 characters").isLength({
       min: 6,
     }),
+    body("confirmPassword", "Please confirm your password").not().isEmpty(),
+    body("role", "Role is required").not().isEmpty(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -26,7 +32,11 @@ router.post(
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { username, email, password } = req.body;
+    const { username, email, password, confirmPassword, role } = req.body;
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({ msg: "Passwords do not match" });
+    }
 
     try {
       let user = await User.findOne({ email });
@@ -34,7 +44,7 @@ router.post(
         return res.status(400).json({ msg: "User already exists" });
       }
 
-      user = new User({ username, email, password });
+      user = new User({ username, email, password, role });
 
       const salt = await bcrypt.genSalt(13);
       user.password = await bcrypt.hash(password, salt);
@@ -58,6 +68,8 @@ router.post(
     }
   }
 );
+
+// Login route
 router.post(
   "/login",
   [
@@ -100,6 +112,8 @@ router.post(
     }
   }
 );
+
+// route for creating a course
 router.post(
   "/courses",
   auth,
@@ -121,33 +135,20 @@ router.post(
   }
 );
 
-// Course update route
-router.put(
-  "/courses/:id",
-  auth,
-  authorize(["teacher", "admin"]),
-  async (req, res) => {
-    const { title, description } = req.body;
-    try {
-      let course = await Course.findById(req.params.id);
-      if (!course) return res.status(404).json({ msg: "Course not found" });
-      if (course.instructor.toString() !== req.user.id) {
-        return res.status(401).json({ msg: "User not authorized" });
-      }
-      course = await Course.findByIdAndUpdate(
-        req.params.id,
-        { $set: { title, description } },
-        { new: true }
-      );
-      res.json(course);
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send("Server error");
-    }
-  }
-);
+// route for displaying courese
+router.get("/courses/:courseId", auth, async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ msg: "Course not found" });
 
-// Add content to the course
+    res.json(course);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server error");
+  }
+});
+
+// Add content to the course route
 router.post(
   "/courses/:courseId/content",
   auth,
@@ -173,36 +174,117 @@ router.post(
   }
 );
 
-router.post("/enrollments", auth, authorize(["student"]), async (req, res) => {
+// course content route
+router.get(
+  "/courses/:courseId/contents",
+  auth,
+  authorize(["teacher", "admin", "student"]),
+  async (req, res) => {
+    try {
+      const course = await Course.findById(req.params.courseId).populate(
+        "content"
+      );
+
+      if (!course) {
+        return res.status(404).json({ msg: "Course not found" });
+      }
+
+      res.json(course.content);
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send("Server error");
+    }
+  }
+);
+
+// enrollment route
+router.post("/enrollments", auth, async (req, res) => {
   const { courseId } = req.body;
+
   try {
+    let course = await Course.findById(courseId);
+    if (!course) return res.status(404).json({ msg: "Course not found" });
+
+    const isEnrolled = await Enrollment.findOne({
+      student: req.user.id,
+      course: courseId,
+    });
+
+    if (isEnrolled) {
+      return res
+        .status(400)
+        .json({ msg: "You are already enrolled in this course" });
+    }
+
     const enrollment = new Enrollment({
       student: req.user.id,
       course: courseId,
-      enrollmentDate: Date.now(),
     });
+
     await enrollment.save();
-    const course = await Course.findById(courseId);
     course.studentsEnrolled.push(req.user.id);
     await course.save();
-    res.json(enrollment);
+    res.json({ msg: "Successfully enrolled in the course!" });
   } catch (err) {
     console.error(err.message);
     res.status(500).send("Server error");
   }
 });
 
+// dashboard route
 router.get("/dashboard", auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select("-password");
-    const courses = await Course.find({ studentsEnrolled: req.user.id });
-    res.json({ user, courses });
+
+    if (!user) {
+      return res.status(404).json({ msg: "User not found" });
+    }
+
+    let courses = [];
+    let users = [];
+    let contacts = [];
+
+    if (user.role === "student") {
+      courses = await Course.find({ studentsEnrolled: req.user.id }).select(
+        "title description"
+      );
+    } else if (user.role === "teacher") {
+      courses = await Course.find({ instructor: req.user.id }).select(
+        "title description"
+      );
+    } else if (user.role === "admin") {
+      courses = await Course.find().select("title description");
+      users = await User.find().select("username role email");
+      contacts = await ContactUs.find();
+    }
+
+    res.json({ user, courses, users, contacts });
   } catch (err) {
     console.error(err.message);
     res.status(500).send("Server error");
   }
 });
+// course fetch
+router.get("/courses/course-fetch", auth, async (req, res) => {
+  try {
+    // In your Express route file
+    router.get("/courses/course-fetch", async (req, res) => {
+      try {
+        const courses = await Course.find(); // Fetch all courses
+        res.json({ courses });
+      } catch (error) {
+        res.status(500).json({ msg: "Error fetching courses" });
+      }
+    });
 
+    res.json({ courses });
+  } catch (error) {
+    console.error("Error fetching courses:", error);
+    res.status(500).json({ msg: "Server Error" });
+  }
+});
+
+// discussion post route
 router.post("/courses/:courseId/discussions", auth, async (req, res) => {
   const { comment } = req.body;
   try {
@@ -220,6 +302,7 @@ router.post("/courses/:courseId/discussions", auth, async (req, res) => {
   }
 });
 
+// quiz post route
 router.post(
   "/courses/:courseId/quizzes",
   auth,
@@ -240,5 +323,142 @@ router.post(
     }
   }
 );
+
+// contact us post route
+router.post("/contact", async (req, res) => {
+  const { name, email, message } = req.body;
+
+  try {
+    const newContact = new ContactUs({
+      name,
+      email,
+      message,
+    });
+    await newContact.save();
+    res.status(201).json({ msg: "Message sent successfully" });
+  } catch (err) {
+    console.error(err.massage);
+    res.status(500).send("Server error");
+  }
+});
+
+// review post route
+router.post("/reviews", async (req, res) => {
+  const { courseId, userId, rating, comment } = req.body;
+
+  if (!courseId || !userId || !rating || !comment) {
+    return res.status(400).json({ message: "All fields are required." });
+  }
+
+  try {
+    const newReview = new Review({
+      courseId,
+      userId,
+      rating: Number(rating),
+      comment,
+    });
+
+    await newReview.save();
+    res.status(201).json(newReview);
+  } catch (error) {
+    console.error("Error creating review:", error);
+    res
+      .status(500)
+      .json({ message: "Error creating review.", error: error.message });
+  }
+});
+
+// Review content get route
+router.get("/reviews/:courseId", async (req, res) => {
+  const { courseId } = req.params;
+
+  try {
+    const reviews = await Review.find({ courseId })
+      .populate("userId", "username")
+      .select("rating comment createdAt userId")
+      .exec();
+
+    res.status(200).json(reviews);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching reviews.", error });
+  }
+});
+
+// course delete route
+router.delete(
+  "/courses/:courseId",
+  auth,
+  authorize(["teacher", "admin"]),
+  async (req, res) => {
+    const { courseId } = req.params;
+
+    try {
+      const course = await Course.findById(courseId);
+
+      if (!course) {
+        return res.status(404).json({ msg: "Course not found" });
+      }
+
+      if (
+        course.instructor.toString() !== req.user.id &&
+        req.user.role !== "admin"
+      ) {
+        return res.status(403).json({ msg: "Not authorized" });
+      }
+
+      await Course.findByIdAndDelete(courseId);
+
+      res.json({ msg: "Course removed" });
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send("Server error");
+    }
+  }
+);
+
+// user delete route
+router.delete(
+  "/users/:userId",
+  auth,
+  authorize(["admin"]),
+  async (req, res) => {
+    const { userId } = req.params;
+
+    try {
+      const user = await User.findById(userId);
+
+      if (!user) {
+        return res.status(404).json({ msg: "User not found" });
+      }
+
+      await User.findByIdAndDelete(userId);
+
+      res.json({ msg: "User removed" });
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send("Server error");
+    }
+  }
+);
+
+// Search for courses by name route
+router.get("/search", async (req, res) => {
+  try {
+    const { query } = req.query;
+
+    if (!query) {
+      return res.status(400).json({ message: "Query is required" });
+    }
+
+    const regex = new RegExp(query, "i");
+    const courses = await Course.find({ title: { $regex: regex } })
+      .select("title")
+      .limit(10);
+
+    res.json(courses);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
 export default router;
